@@ -19,13 +19,21 @@ App Next.js (PWA) com:
 4. **Build → Firestore Database → Create database** (modo Production) → aba **Rules** → cole o conteúdo de `firestore.rules` → Publish
 5. **Configurações do projeto → Cloud Messaging → Web Push certificates → Generate key pair** → guarde essa chave (é a `VAPID key`)
 6. No topo, clique na engrenagem → **Configurações do projeto → Uso e faturamento → Modificar plano → Blaze (pay as you go)**. É necessário só pra rodar a Cloud Function agendada (o item 3 abaixo explica o custo).
+7. **(opcional, para leitura de PDF por IA na Dieta e na Ficha) Build → App Check** → registre seu app Web com o provedor **reCAPTCHA Enterprise** (o fluxo guiado cria a chave no Google Cloud pra você) → guarde a **site key**. Depois, em **App Check → APIs**, confira se a API "Gemini Developer API" está marcada como **Enforced**. Sem esse passo, o resto do app funciona normalmente — só a leitura automática de arquivo por IA fica desativada.
 
 ### 2. Configurar as chaves do projeto
 
 ```bash
 cp .env.local.example .env.local
 ```
-Preencha com os valores do passo 1 (inclusive a `VAPID key` em `NEXT_PUBLIC_FIREBASE_VAPID_KEY`).
+Preencha com os valores do passo 1 (inclusive a `VAPID key` em `NEXT_PUBLIC_FIREBASE_VAPID_KEY` e, se configurou o passo 7, a `site key` do reCAPTCHA em `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`).
+
+Rodando localmente sem essa chave configurada, a leitura de PDF por IA
+mostra um erro claro ao tentar usar — o resto do app funciona normalmente.
+Se quiser testar localmente com a chave configurada, ative o provedor de
+debug do App Check (o navegador vai logar um "debug token" no console na
+primeira execução; cadastre-o em **App Check → seu app → gerenciar tokens
+de depuração**).
 
 ### 3. Publicar a Cloud Function (envia os pushes agendados)
 
@@ -71,7 +79,7 @@ git push -u origin main
 ### 6. Publicar na Vercel
 
 1. vercel.com → **Add New → Project** → importe o repositório
-2. Em **Environment Variables**, adicione as 7 chaves do seu `.env.local` (incluindo a `VAPID key`)
+2. Em **Environment Variables**, adicione as chaves do seu `.env.local` (incluindo a `VAPID key` e, se usar, a `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`)
 3. **Deploy**
 
 ### 7. Autorizar o domínio da Vercel no Firebase
@@ -98,10 +106,11 @@ entrega push nenhum para sites comuns abertos no navegador.
 
 ## O que tem em cada aba
 
-- **Academia**: ficha por dia da semana, check-in, cronômetro de descanso, checklist do treino do dia com dicas de execução, evolução de carga
+- **Academia**: ficha por dia da semana (importável de .txt/.csv/.md ou de um PDF lido por IA), check-in, cronômetro de descanso (anel de progresso), checklist do treino do dia com dicas de execução, evolução de carga
 - **Água**: meta calculada no questionário, anel de progresso, lembretes fracionados, com toggle para notificar ou não
-- **Dieta**: refeições com horário (cada uma com toggle de notificação própria), upload do arquivo da dieta, dicas de receitas com link de busca no TikTok
-- **Casa** *(novo)*: tarefas **diárias**, **semanais** (escolhendo os dias) ou **com prazo**, cada uma com checkbox de conclusão e um toggle opcional de notificação num horário específico
+- **Dieta**: refeições por dia da semana com horário (cada uma com toggle de notificação própria), upload de arquivo (.txt/.csv/.md ou PDF de plano alimentar em qualquer formato, lido por IA), dicas de receitas com link para o app do TikTok
+- **Casa**: tarefas **diárias**, **semanais** (escolhendo os dias) ou **pontuais** (data única, sem repetição), cada uma com checkbox de conclusão e um toggle opcional de notificação num horário específico
+- Cada aba (Água, Dieta, Casa) tem um toggle próprio para ligar/desligar as notificações daquela aba inteira
 
 ## Como funcionam as notificações agora
 
@@ -119,7 +128,8 @@ app/
   dashboard/page.js        # painel: Academia / Água / Dieta / Casa
   RegisterSW.js             # registra o service worker do PWA
 lib/
-  firebase.js                # inicialização do Firebase
+  firebase.js                # inicialização do Firebase (+ App Check e AI Logic)
+  ai.js                        # leitura de PDF (dieta/ficha) via Gemini
   AuthProvider.js              # contexto do usuário logado
   db.js                         # leitura/escrita no Firestore
   water.js                       # cálculo da meta de água e horários
@@ -140,9 +150,12 @@ firebase.json                         # config de deploy das Functions/Firestore
 
 - A tolerância da Cloud Function é de ±7 minutos em torno do horário marcado
   (ela roda a cada 15 min) — não é um segundo exato, mas é confiável.
-- O arquivo de dieta enviado é salvo como texto no próprio documento do
-  usuário no Firestore (limite de 1MB) — para arquivos grandes, o ideal é
-  Firebase Storage (não incluído).
+- O arquivo enviado (dieta/ficha) é salvo como texto/base64 no próprio
+  documento do usuário no Firestore (limite de 1MB por documento) — para
+  arquivos grandes, o ideal é Firebase Storage (não incluído).
+- A leitura por IA (Gemini, via Firebase AI Logic) tem um custo pequeno por
+  arquivo enviado — dentro da faixa gratuita do backend "Gemini Developer
+  API" para uso pessoal, mas depende da sua cota no Google Cloud.
 - Os botões de receita abrem a busca do TikTok em nova aba; a API oficial do
   TikTok exige autenticação própria da plataforma.
 - Notificações em segundo plano no Android/desktop funcionam mesmo sem

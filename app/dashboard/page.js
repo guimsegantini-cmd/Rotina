@@ -490,22 +490,44 @@ export default function Dashboard() {
 function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, fichaArquivo, setFichaArquivo, showToast }) {
   const [sub, setSub] = useState("hoje");
   const [diaEdit, setDiaEdit] = useState(todayDia());
+  const [lendoFichaIA, setLendoFichaIA] = useState(false);
   const fichaFileRef = useRef(null);
+
+  const aplicarFichaImportada = (importada, origem) => {
+    const dias = Object.keys(importada);
+    if (!dias.length) { showToast("Não encontramos exercícios reconhecíveis nesse arquivo."); return; }
+    setFicha((f) => ({ ...f, ...importada }));
+    showToast(origem === "ia"
+      ? `Ficha lida por IA: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`
+      : `Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
+  };
+
   const onFichaFile = (e) => {
     const file = e.target.files[0]; if (!file) return;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const conteudo = String(reader.result);
-      const { dias: importada, distribuido } = parseFichaArquivo(conteudo);
-      const dias = Object.keys(importada);
-      if (!dias.length) { showToast("Não encontramos exercícios reconhecíveis nesse arquivo."); return; }
-      setFicha((f) => ({ ...f, ...importada }));
       setFichaArquivo({ nome: file.name, conteudo });
-      showToast(distribuido
-        ? `Ficha importada: exercícios distribuídos automaticamente em ${dias.length} dia(s) (seg-sex).`
-        : `Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
+      if (isPdf) {
+        setLendoFichaIA(true);
+        try {
+          const { analisarFichaTreino } = await import("@/lib/ai");
+          const { dias } = await analisarFichaTreino(conteudo);
+          aplicarFichaImportada(dias, "ia");
+        } catch (err) {
+          console.error("Erro ao ler PDF da ficha", err);
+          const motivo = (err && err.message ? err.message : String(err)).slice(0, 160);
+          showToast(`Não conseguimos ler esse PDF automaticamente (${motivo}). O arquivo foi salvo para consulta.`);
+        } finally {
+          setLendoFichaIA(false);
+        }
+      } else {
+        const { dias } = parseFichaArquivo(conteudo);
+        aplicarFichaImportada(dias, "regras");
+      }
     };
-    reader.readAsText(file);
+    if (isPdf) reader.readAsDataURL(file); else reader.readAsText(file);
     e.target.value = "";
   };
   const removeFichaArquivo = () => { setFichaArquivo(null); showToast("Arquivo da ficha removido."); };
@@ -553,12 +575,12 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
       )}
       {sub === "ficha" && (
         <div className="mt-4">
-          <input ref={fichaFileRef} type="file" className="hidden" onChange={onFichaFile} accept=".txt,.csv,.md" />
-          <button onClick={() => fichaFileRef.current.click()} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-display text-xs uppercase tracking-wide text-white btn-press" style={{ background: "#E8462B" }}>
-            <Upload size={15} /> Importar ficha de arquivo
+          <input ref={fichaFileRef} type="file" className="hidden" onChange={onFichaFile} accept=".txt,.csv,.md,.pdf" />
+          <button onClick={() => fichaFileRef.current.click()} disabled={lendoFichaIA} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-display text-xs uppercase tracking-wide text-white btn-press" style={{ background: "#E8462B", opacity: lendoFichaIA ? 0.6 : 1 }}>
+            <Upload size={15} /> {lendoFichaIA ? "Lendo com IA…" : "Importar ficha de arquivo"}
           </button>
           <p className="text-[11px] mt-1.5 mb-3" style={{ color: "#7A828A" }}>
-            Arquivo .txt/.csv/.md com o nome do dia em uma linha (ex: "Segunda") seguido dos exercícios, um por linha ("Agachamento - 4x10"). Os dias encontrados no arquivo substituem os exercícios já cadastrados.
+            Arquivo .txt/.csv/.md com o nome do dia em uma linha (ex: "Segunda") seguido dos exercícios, um por linha ("Agachamento - 4x10"), ou um PDF de ficha de treino em qualquer formato — lido por IA, que identifica os exercícios e os dias automaticamente. Os dias encontrados no arquivo substituem os exercícios já cadastrados.
           </p>
           {fichaArquivo && (
             <div className="mb-3 card-white p-3">
@@ -795,9 +817,9 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
       } else if (isPdf) {
         setLendoPdf(true);
         try {
-          const { extrairTextoPdf, dataUrlParaArrayBuffer } = await import("@/lib/pdf");
-          const texto = await extrairTextoPdf(dataUrlParaArrayBuffer(conteudo));
-          aplicarImportadas(parseDietaArquivo(texto).dias);
+          const { analisarPlanoAlimentar } = await import("@/lib/ai");
+          const { dias } = await analisarPlanoAlimentar(conteudo);
+          aplicarImportadas(dias);
         } catch (err) {
           console.error("Erro ao ler PDF da dieta", err);
           const motivo = (err && err.message ? err.message : String(err)).slice(0, 160);
@@ -874,10 +896,10 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
         <div className="mt-4">
           <input ref={fileRef} type="file" className="hidden" onChange={onFile} accept=".txt,.csv,.md,.pdf,image/*" />
           <button onClick={() => fileRef.current.click()} disabled={lendoPdf} className="w-full flex items-center justify-center gap-2 py-4 rounded-full font-display text-sm uppercase tracking-wide text-white btn-press" style={{ background: "#C9A227", opacity: lendoPdf ? 0.6 : 1 }}>
-            <Upload size={16} /> {lendoPdf ? "Lendo PDF…" : "Enviar arquivo da dieta"}
+            <Upload size={16} /> {lendoPdf ? "Lendo com IA…" : "Enviar arquivo da dieta"}
           </button>
           <p className="text-[11px] mt-1.5" style={{ color: "#7A828A" }}>
-            Envie um arquivo .txt/.csv/.md ou um PDF de plano alimentar (ex: exportado por nutricionista, com refeições, horários e observações). As refeições são reconhecidas e separadas por horário automaticamente. Se o arquivo indicar dias, elas são organizadas por dia da semana; caso contrário, a mesma lista é aplicada automaticamente a todos os dias. Arquivos de imagem ficam salvos para consulta, mas não são lidos automaticamente.
+            Envie um arquivo .txt/.csv/.md com uma refeição por linha, ou um PDF de plano alimentar em qualquer formato (tabela, lista, texto livre — de qualquer app ou nutricionista). PDFs são lidos por IA, que identifica as refeições e horários automaticamente. Se o plano indicar dias da semana, as refeições são organizadas por dia; caso contrário, a mesma lista é aplicada a todos os dias. Arquivos de imagem ficam salvos para consulta, mas não são lidos automaticamente.
           </p>
           {dietaArquivo && (
             <div className="mt-4 card-white p-3">

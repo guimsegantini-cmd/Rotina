@@ -3,18 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "predev": "node scripts/generate-sw.js && node scripts/copy-pdf-worker.js",
+    "predev": "node scripts/generate-sw.js",
     "dev": "next dev",
-    "prebuild": "node scripts/generate-sw.js && node scripts/copy-pdf-worker.js",
+    "prebuild": "node scripts/generate-sw.js",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
-    "firebase": "^10.12.4",
+    "firebase": "^12.16.0",
     "lucide-react": "^0.383.0",
     "next": "14.2.35",
-    "pdfjs-dist": "^6.2.108",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.12.7"
