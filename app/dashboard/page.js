@@ -16,6 +16,7 @@ const K = {
   ficha: "ficha-treino", checkins: "checkins", exStatus: "exercicio-status",
   pesoEvo: "evolucao-peso", aguaLog: "agua-log", refeicoes: "dieta-refeicoes",
   dietaArquivo: "dieta-arquivo", fichaArquivo: "ficha-arquivo", timerCfg: "rest-timer-config", tarefas: "casa-tarefas",
+  notificarDieta: "dieta-notificar", notificarCasa: "casa-notificar",
 };
 
 const DIAS = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
@@ -120,7 +121,7 @@ function parseLinhaRefeicao(linha) {
 // Se o arquivo indicar dias (ex: "Segunda" seguido das refeições daquele
 // dia), as refeições são organizadas por dia da semana. Caso contrário, a
 // mesma lista de refeições é aplicada automaticamente a todos os dias.
-function parseDietaArquivo(texto) {
+function parseDietaSimples(texto) {
   const linhas = texto.split(/\r?\n/);
   const out = {};
   const soltas = [];
@@ -137,9 +138,93 @@ function parseDietaArquivo(texto) {
   }
   if (Object.keys(out).length === 0 && soltas.length > 0) {
     DIAS.forEach((d) => { out[d] = soltas.map((r) => ({ ...r, id: uid() })); });
-    return { dias: out, distribuido: true, total: soltas.length };
+    return { dias: out, total: soltas.length };
   }
-  return { dias: out, distribuido: false, total: soltas.length };
+  return { dias: out, total: soltas.length };
+}
+
+const ORDEM_SEMANA = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"];
+
+function limparLinhaPdf(l) {
+  return l.replace(/\s{2,}/g, " ").trim();
+}
+
+// Reconhece o formato de "plano alimentar" estruturado, comum em PDFs
+// exportados por softwares de nutrição: blocos por refeição com nome +
+// horário (ex: "Café da Manhã 09:00"), lista de alimentos, uma linha
+// "Total" e uma "Observação" com o resumo em texto livre — usado como a
+// descrição da refeição (mais legível que listar os alimentos). Se o
+// arquivo tiver múltiplos "Plano : Dia N", cada dia é distribuído para um
+// dia da semana (seg, ter, ...). Com um único dia (ou nenhuma marcação de
+// dia), a mesma lista de refeições é aplicada a todos os dias da semana.
+function parsePlanoAlimentarEstruturado(texto) {
+  const linhas = texto.split(/\r?\n/).map(limparLinhaPdf);
+  const cabecalho = linhas.find((l) => l.length > 0) || null;
+
+  const porDiaBruto = {};
+  let diaAtual = "_unico";
+  let ref = null;
+
+  const commit = () => {
+    if (ref && ref.horario) {
+      const opcoes = ref.obs.join(" ").trim() || ref.itens.join(", ");
+      if (opcoes) {
+        if (!porDiaBruto[diaAtual]) porDiaBruto[diaAtual] = [];
+        porDiaBruto[diaAtual].push({ id: uid(), horario: ref.horario, opcoes, notificar: true });
+      }
+    }
+    ref = null;
+  };
+
+  for (const linha of linhas) {
+    if (!linha) { if (ref) ref.emObs = false; continue; }
+    if (cabecalho && linha === cabecalho) continue;
+    if (/^Dados Nutricionais Totais/i.test(linha)) { commit(); break; }
+    const diaM = linha.match(/^Plano\s*:?\s*Dia\s*(\d+)/i);
+    if (diaM) { commit(); diaAtual = diaM[1]; continue; }
+    const mealM = linha.match(/^([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ ]{1,39})\s+(\d{1,2}):(\d{2})(.*)$/);
+    if (mealM) {
+      const resto = mealM[4].trim();
+      if (resto === "" || /^CHO\b/i.test(resto)) {
+        commit();
+        ref = { horario: `${mealM[2].padStart(2, "0")}:${mealM[3]}`, itens: [], obs: [], emObs: false };
+        continue;
+      }
+    }
+    if (!ref) continue;
+    if (/^Total\b/i.test(linha)) continue;
+    if (/^Observa[cç][aã]o\b/i.test(linha)) { ref.emObs = true; continue; }
+    if (ref.emObs) { ref.obs.push(linha); continue; }
+    const nomeItem = linha.split(/\s+-\s+/)[0].trim();
+    if (nomeItem.length > 1) ref.itens.push(nomeItem);
+  }
+  commit();
+
+  const chaves = Object.keys(porDiaBruto);
+  const dias = {};
+  let total = 0;
+  if (chaves.length <= 1) {
+    const lista = porDiaBruto[chaves[0]] || [];
+    total = lista.length;
+    if (total) DIAS.forEach((d) => { dias[d] = lista.map((r) => ({ ...r, id: uid() })); });
+  } else {
+    chaves.sort((a, b) => Number(a) - Number(b)).forEach((chave, i) => {
+      const d = ORDEM_SEMANA[i % ORDEM_SEMANA.length];
+      if (!dias[d]) dias[d] = [];
+      dias[d].push(...porDiaBruto[chave].map((r) => ({ ...r, id: uid() })));
+      total += porDiaBruto[chave].length;
+    });
+  }
+  return { dias, total };
+}
+
+// Ponto de entrada único: tenta reconhecer o formato estruturado de plano
+// alimentar (PDFs de nutricionista) e, se não encontrar nada, cai para o
+// formato simples de uma refeição por linha.
+function parseDietaArquivo(texto) {
+  const estruturado = parsePlanoAlimentarEstruturado(texto);
+  if (estruturado.total > 0) return estruturado;
+  return parseDietaSimples(texto);
 }
 
 const RECEITAS = [
@@ -205,6 +290,8 @@ export default function Dashboard() {
   const [fichaArquivo, setFichaArquivo] = useState(null);
   const [timerCfg, setTimerCfg] = useState({ segundos: 90 });
   const [tarefas, setTarefas] = useState([]);
+  const [notificarDieta, setNotificarDieta] = useState(true);
+  const [notificarCasa, setNotificarCasa] = useState(true);
   const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
   const [toast, setToast] = useState(null);
   const notifiedRef = useRef(new Set());
@@ -217,14 +304,16 @@ export default function Dashboard() {
       const p = await loadPerfilAgua(e.uid);
       if (!p) { router.replace("/questionario"); return; }
       setPerfil(p);
-      const [f, c, es, pe, al, rf, da, fa, tc, tf] = await Promise.all([
+      const [f, c, es, pe, al, rf, da, fa, tc, tf, nd, nc] = await Promise.all([
         loadField(e.uid, K.ficha, {}), loadField(e.uid, K.checkins, []), loadField(e.uid, K.exStatus, {}),
         loadField(e.uid, K.pesoEvo, []), loadField(e.uid, K.aguaLog, {}), loadField(e.uid, K.refeicoes, {}),
         loadField(e.uid, K.dietaArquivo, null), loadField(e.uid, K.fichaArquivo, null),
         loadField(e.uid, K.timerCfg, { segundos: 90 }), loadField(e.uid, K.tarefas, []),
+        loadField(e.uid, K.notificarDieta, true), loadField(e.uid, K.notificarCasa, true),
       ]);
       setFicha(f); setCheckins(c); setExStatus(es); setPesoEvo(pe);
       setAguaLog(al); setRefeicoes(migrarRefeicoes(rf)); setDietaArquivo(da); setFichaArquivo(fa); setTimerCfg(tc); setTarefas(migrarTarefas(tf));
+      setNotificarDieta(nd); setNotificarCasa(nc);
       setLoaded(true);
     })();
   }, [user, loadingAuth, router]);
@@ -239,6 +328,8 @@ export default function Dashboard() {
   useEffect(() => { if (loaded && user) saveField(user.uid, K.fichaArquivo, fichaArquivo); }, [fichaArquivo, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.timerCfg, timerCfg); }, [timerCfg, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.tarefas, tarefas); }, [tarefas, loaded]);
+  useEffect(() => { if (loaded && user) saveField(user.uid, K.notificarDieta, notificarDieta); }, [notificarDieta, loaded]);
+  useEffect(() => { if (loaded && user) saveField(user.uid, K.notificarCasa, notificarCasa); }, [notificarCasa, loaded]);
 
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(null), 3500); };
 
@@ -263,28 +354,32 @@ export default function Dashboard() {
           }
         });
       }
-      (refeicoes[todayDia()] || []).forEach((r) => {
-        if (r.notificar === false) return;
-        const key = `ref-${dayTag}-${r.id}`;
-        if (r.horario === hhmm && !notifiedRef.current.has(key)) {
-          notifiedRef.current.add(key);
-          notify("Hora da refeição 🍽️", r.opcoes || "Confira suas opções da dieta.");
-          showToast(`🍽️ ${r.horario} — ${r.opcoes || "hora da refeição"}`);
-        }
-      });
-      tarefas.forEach((t) => {
-        if (!t.notificar || !t.horario) return;
-        if (!tarefaEhHoje(t) || tarefaConcluidaHoje(t)) return;
-        const key = `tarefa-${dayTag}-${t.id}`;
-        if (t.horario === hhmm && !notifiedRef.current.has(key)) {
-          notifiedRef.current.add(key);
-          notify("Tarefa pendente 🏠", t.titulo);
-          showToast(`🏠 ${t.horario} — ${t.titulo}`);
-        }
-      });
+      if (notificarDieta) {
+        (refeicoes[todayDia()] || []).forEach((r) => {
+          if (r.notificar === false) return;
+          const key = `ref-${dayTag}-${r.id}`;
+          if (r.horario === hhmm && !notifiedRef.current.has(key)) {
+            notifiedRef.current.add(key);
+            notify("Hora da refeição 🍽️", r.opcoes || "Confira suas opções da dieta.");
+            showToast(`🍽️ ${r.horario} — ${r.opcoes || "hora da refeição"}`);
+          }
+        });
+      }
+      if (notificarCasa) {
+        tarefas.forEach((t) => {
+          if (!t.notificar || !t.horario) return;
+          if (!tarefaEhHoje(t) || tarefaConcluidaHoje(t)) return;
+          const key = `tarefa-${dayTag}-${t.id}`;
+          if (t.horario === hhmm && !notifiedRef.current.has(key)) {
+            notifiedRef.current.add(key);
+            notify("Tarefa pendente 🏠", t.titulo);
+            showToast(`🏠 ${t.horario} — ${t.titulo}`);
+          }
+        });
+      }
     }, 20000);
     return () => clearInterval(iv);
-  }, [horariosAgua, mlPorLembrete, refeicoes, tarefas, perfil]);
+  }, [horariosAgua, mlPorLembrete, refeicoes, tarefas, perfil, notificarDieta, notificarCasa]);
 
   const pedirPermissao = async () => {
     const r = await ativarPushNotifications();
@@ -353,10 +448,10 @@ export default function Dashboard() {
               <Agua {...{ perfil, aguaLog, setAguaLog, horariosAgua, mlPorLembrete, notifPerm, pedirPermissao, router, toggleNotificarAgua }} />
             )}
             {tab === "dieta" && (
-              <Dieta {...{ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPerm, pedirPermissao, showToast }} />
+              <Dieta {...{ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notificarDieta, setNotificarDieta, notifPerm, pedirPermissao, showToast }} />
             )}
             {tab === "casa" && (
-              <Casa {...{ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }} />
+              <Casa {...{ tarefas, setTarefas, notificarCasa, setNotificarCasa, notifPerm, pedirPermissao, showToast }} />
             )}
           </div>
         )}
@@ -635,29 +730,49 @@ function Agua({ perfil, aguaLog, setAguaLog, horariosAgua, mlPorLembrete, notifP
 }
 
 /* ---------------- Dieta ---------------- */
-function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPerm, pedirPermissao, showToast }) {
+function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notificarDieta, setNotificarDieta, notifPerm, pedirPermissao, showToast }) {
   const [sub, setSub] = useState("hoje");
   const [diaEdit, setDiaEdit] = useState(todayDia());
+  const [lendoPdf, setLendoPdf] = useState(false);
   const fileRef = useRef(null);
+
+  const aplicarImportadas = (importadas) => {
+    const dias = Object.keys(importadas);
+    if (!dias.length) {
+      showToast("Não conseguimos reconhecer refeições nesse arquivo automaticamente. Ele foi salvo para consulta.");
+      return;
+    }
+    setRefeicoes((r) => ({ ...r, ...importadas }));
+    const total = Object.values(importadas).reduce((n, lista) => n + lista.length, 0);
+    showToast(dias.length >= DIAS.length
+      ? `Dieta enviada — ${total} refeição(ões) aplicada(s) automaticamente a todos os dias da semana.`
+      : `Dieta enviada — refeições distribuídas automaticamente em ${dias.length} dia(s) da semana.`);
+  };
+
   const onFile = (e) => {
     const file = e.target.files[0]; if (!file) return;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const isText = !isPdf && (/^(text|application\/json|application\/csv)/.test(file.type) || /\.(txt|csv|md)$/i.test(file.name));
     const reader = new FileReader();
-    const isText = /^(text|application\/json|application\/csv)/.test(file.type) || /\.(txt|csv|md)$/i.test(file.name);
-    reader.onload = () => {
-      setDietaArquivo({ nome: file.name, tipo: isText ? "texto" : "arquivo", conteudo: reader.result });
+    reader.onload = async () => {
+      const conteudo = String(reader.result);
+      setDietaArquivo({ nome: file.name, tipo: isText ? "texto" : "arquivo", conteudo });
       if (isText) {
-        const { dias: importadas, distribuido, total } = parseDietaArquivo(String(reader.result));
-        const dias = Object.keys(importadas);
-        if (!dias.length) {
-          showToast("Dieta enviada, mas nenhum horário de refeição foi reconhecido no arquivo.");
-        } else {
-          setRefeicoes((r) => ({ ...r, ...importadas }));
-          showToast(distribuido
-            ? `Dieta enviada — ${total} refeição(ões) distribuída(s) automaticamente em todos os dias da semana.`
-            : `Dieta enviada — refeições organizadas em ${dias.length} dia(s) da semana.`);
+        aplicarImportadas(parseDietaArquivo(conteudo).dias);
+      } else if (isPdf) {
+        setLendoPdf(true);
+        try {
+          const { extrairTextoPdf, dataUrlParaArrayBuffer } = await import("@/lib/pdf");
+          const texto = await extrairTextoPdf(dataUrlParaArrayBuffer(conteudo));
+          aplicarImportadas(parseDietaArquivo(texto).dias);
+        } catch (err) {
+          console.error("Erro ao ler PDF da dieta", err);
+          showToast("Não conseguimos ler esse PDF automaticamente. O arquivo foi salvo para consulta.");
+        } finally {
+          setLendoPdf(false);
         }
       } else {
-        showToast("Dieta enviada com sucesso. Envie um arquivo .txt/.csv/.md para lançar as refeições automaticamente.");
+        showToast("Dieta enviada com sucesso. Envie um arquivo .txt/.csv/.md/.pdf para lançar as refeições automaticamente.");
       }
     };
     if (isText) reader.readAsText(file); else reader.readAsDataURL(file);
@@ -672,6 +787,12 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
 
   return (
     <div>
+      <div className="mb-3 card-white p-3">
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="flex items-center gap-2 text-sm font-semibold" style={{ color: "#1C2320" }}><Bell size={14} /> Notificar lembretes de dieta</span>
+          <Switch checked={notificarDieta} onChange={() => setNotificarDieta((v) => !v)} />
+        </label>
+      </div>
       <SubNav items={SUBTABS} value={sub} onChange={setSub} accent="#C9A227" />
       {sub === "hoje" && (
         <div className="mt-4 space-y-2">
@@ -718,9 +839,11 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
       {sub === "arquivo" && (
         <div className="mt-4">
           <input ref={fileRef} type="file" className="hidden" onChange={onFile} accept=".txt,.csv,.md,.pdf,image/*" />
-          <button onClick={() => fileRef.current.click()} className="w-full flex items-center justify-center gap-2 py-4 rounded-full font-display text-sm uppercase tracking-wide text-white btn-press" style={{ background: "#C9A227" }}><Upload size={16} /> Enviar arquivo da dieta</button>
+          <button onClick={() => fileRef.current.click()} disabled={lendoPdf} className="w-full flex items-center justify-center gap-2 py-4 rounded-full font-display text-sm uppercase tracking-wide text-white btn-press" style={{ background: "#C9A227", opacity: lendoPdf ? 0.6 : 1 }}>
+            <Upload size={16} /> {lendoPdf ? "Lendo PDF…" : "Enviar arquivo da dieta"}
+          </button>
           <p className="text-[11px] mt-1.5" style={{ color: "#7A828A" }}>
-            Envie um arquivo .txt/.csv/.md com uma refeição por linha, começando pelo horário (ex: "07:00 - Ovos e aveia"). Se o arquivo indicar dias (ex: "Segunda" seguido das refeições daquele dia), elas são organizadas por dia da semana; caso contrário, a mesma lista é aplicada automaticamente a todos os dias. Arquivos em PDF/imagem ficam salvos para consulta, mas não são lidos automaticamente.
+            Envie um arquivo .txt/.csv/.md ou um PDF de plano alimentar (ex: exportado por nutricionista, com refeições, horários e observações). As refeições são reconhecidas e separadas por horário automaticamente. Se o arquivo indicar dias, elas são organizadas por dia da semana; caso contrário, a mesma lista é aplicada automaticamente a todos os dias. Arquivos de imagem ficam salvos para consulta, mas não são lidos automaticamente.
           </p>
           {dietaArquivo && (
             <div className="mt-4 card-white p-3">
@@ -778,7 +901,7 @@ function tarefaAtrasada(t) {
   return t.tipo === "pontual" && !t.concluida && !!t.data && t.data < todayKey();
 }
 
-function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
+function Casa({ tarefas, setTarefas, notificarCasa, setNotificarCasa, notifPerm, pedirPermissao, showToast }) {
   const [mostrarForm, setMostrarForm] = useState(false);
 
   const toggleConcluir = (t) => {
@@ -800,6 +923,12 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
 
   return (
     <div className="mt-2">
+      <div className="mb-3 card-white p-3">
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="flex items-center gap-2 text-sm font-semibold" style={{ color: "#1C2320" }}><Bell size={14} /> Notificar lembretes de tarefas</span>
+          <Switch checked={notificarCasa} onChange={() => setNotificarCasa((v) => !v)} />
+        </label>
+      </div>
       <p className="font-mono text-xs mb-2" style={{ color: "#5C6570" }}>{DIA_LABEL[todayDia()].toUpperCase()} · TAREFAS DE HOJE</p>
 
       {hojeList.length === 0 && <EmptyState text="Nenhuma tarefa por aqui ainda. Adicione tarefas diárias, semanais ou pontuais (sem repetição)." />}

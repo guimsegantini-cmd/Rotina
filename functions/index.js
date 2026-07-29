@@ -90,26 +90,30 @@ exports.enviarLembretes = onSchedule("every 15 minutes", async () => {
     }
 
     // Dieta (formato novo: objeto por dia da semana; formato legado: array flat aplicado todo dia)
-    const refeicoesRaw = data["dieta-refeicoes"];
-    const refeicoesHoje = Array.isArray(refeicoesRaw) ? refeicoesRaw : (refeicoesRaw?.[diaSemana] || []);
-    for (const r of refeicoesHoje) {
-      if (!r.notificar || !r.horario) continue;
-      const chave = `ref-${r.id}`;
-      if (diffMinutos(r.horario, horaAtual) <= TOLERANCIA_MIN && !enviados.includes(chave)) {
-        mensagens.push({ title: "Hora da refeição 🍽️", body: r.opcoes || "Confira suas opções da dieta." });
-        enviados.push(chave);
+    if (data["dieta-notificar"] !== false) {
+      const refeicoesRaw = data["dieta-refeicoes"];
+      const refeicoesHoje = Array.isArray(refeicoesRaw) ? refeicoesRaw : (refeicoesRaw?.[diaSemana] || []);
+      for (const r of refeicoesHoje) {
+        if (!r.notificar || !r.horario) continue;
+        const chave = `ref-${r.id}`;
+        if (diffMinutos(r.horario, horaAtual) <= TOLERANCIA_MIN && !enviados.includes(chave)) {
+          mensagens.push({ title: "Hora da refeição 🍽️", body: r.opcoes || "Confira suas opções da dieta." });
+          enviados.push(chave);
+        }
       }
     }
 
     // Casa
-    const tarefas = data["casa-tarefas"] || [];
-    for (const t of tarefas) {
-      if (!t.notificar || !t.horario) continue;
-      if (!tarefaEhHoje(t, diaSemana, hoje) || tarefaConcluidaHoje(t, hoje)) continue;
-      const chave = `casa-${t.id}`;
-      if (diffMinutos(t.horario, horaAtual) <= TOLERANCIA_MIN && !enviados.includes(chave)) {
-        mensagens.push({ title: "Tarefa pendente 🏠", body: t.titulo });
-        enviados.push(chave);
+    if (data["casa-notificar"] !== false) {
+      const tarefas = data["casa-tarefas"] || [];
+      for (const t of tarefas) {
+        if (!t.notificar || !t.horario) continue;
+        if (!tarefaEhHoje(t, diaSemana, hoje) || tarefaConcluidaHoje(t, hoje)) continue;
+        const chave = `casa-${t.id}`;
+        if (diffMinutos(t.horario, horaAtual) <= TOLERANCIA_MIN && !enviados.includes(chave)) {
+          mensagens.push({ title: "Tarefa pendente 🏠", body: t.titulo });
+          enviados.push(chave);
+        }
       }
     }
 
