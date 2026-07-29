@@ -54,12 +54,28 @@ const DIA_ALIASES = {
 };
 const matchDia = (linha) => DIA_ALIASES[normalizeStr(linha).replace(/:$/, "")] || null;
 
+function parseLinhaExercicio(linha) {
+  let nome = linha, series = "";
+  const partesTraco = linha.split(/\s+-\s+|\s*\|\s*/);
+  if (partesTraco.length >= 2) {
+    nome = partesTraco[0].trim(); series = partesTraco.slice(1).join(" ").trim();
+  } else {
+    const m = linha.match(/^(.*?)[,;]\s*(\d+\s*[xX]\s*\d+.*)$/) || linha.match(/^(.*?)\s+(\d+\s*[xX]\s*\d+)\s*$/);
+    if (m) { nome = m[1].trim(); series = m[2].trim(); }
+  }
+  return { nome, series };
+}
+
+const DIAS_TREINO_PADRAO = ["seg", "ter", "qua", "qui", "sex"];
+
 // Aceita um arquivo de texto com o nome do dia em uma linha (ex: "Segunda")
 // seguido pelos exercícios daquele dia, um por linha (ex: "Agachamento - 4x10"),
-// ou linhas no formato CSV "dia,exercicio,series".
+// ou linhas no formato CSV "dia,exercicio,series". Se o arquivo não indicar
+// nenhum dia, os exercícios são distribuídos automaticamente entre seg-sex.
 function parseFichaArquivo(texto) {
   const linhas = texto.split(/\r?\n/);
   const out = {};
+  const soltos = [];
   let atual = null;
   for (const raw of linhas) {
     const linha = raw.trim();
@@ -70,39 +86,60 @@ function parseFichaArquivo(texto) {
       const partes = linha.split(/[,;]/).map((p) => p.trim());
       if (partes.length >= 2) {
         const d = matchDia(partes[0]);
-        if (d) { if (!out[d]) out[d] = []; out[d].push({ id: uid(), nome: partes[1] || "", series: partes[2] || "" }); }
+        if (d) { if (!out[d]) out[d] = []; out[d].push({ id: uid(), nome: partes[1] || "", series: partes[2] || "" }); continue; }
       }
+      const { nome, series } = parseLinhaExercicio(linha);
+      if (nome) soltos.push({ id: uid(), nome, series });
       continue;
     }
-    let nome = linha, series = "";
-    const partesTraco = linha.split(/\s+-\s+|\s*\|\s*/);
-    if (partesTraco.length >= 2) {
-      nome = partesTraco[0].trim(); series = partesTraco.slice(1).join(" ").trim();
-    } else {
-      const m = linha.match(/^(.*?)[,;]\s*(\d+\s*[xX]\s*\d+.*)$/) || linha.match(/^(.*?)\s+(\d+\s*[xX]\s*\d+)\s*$/);
-      if (m) { nome = m[1].trim(); series = m[2].trim(); }
-    }
+    const { nome, series } = parseLinhaExercicio(linha);
     if (nome) out[atual].push({ id: uid(), nome, series });
   }
-  return out;
+  if (Object.keys(out).length === 0 && soltos.length > 0) {
+    const porDia = Math.ceil(soltos.length / DIAS_TREINO_PADRAO.length);
+    DIAS_TREINO_PADRAO.forEach((d, i) => {
+      const chunk = soltos.slice(i * porDia, (i + 1) * porDia);
+      if (chunk.length) out[d] = chunk;
+    });
+    return { dias: out, distribuido: true };
+  }
+  return { dias: out, distribuido: false };
+}
+
+function parseLinhaRefeicao(linha) {
+  const m = linha.match(/^(\d{1,2}):?(\d{2})\s*[-–:|,]?\s*(.*)$/);
+  if (!m) return null;
+  const horario = `${m[1].padStart(2, "0")}:${m[2]}`;
+  const opcoes = m[3].trim();
+  if (!opcoes) return null;
+  return { id: uid(), horario, opcoes, notificar: true };
 }
 
 // Aceita um arquivo de texto com uma refeição por linha, começando pelo
 // horário (ex: "07:00 - Ovos e aveia" ou "12:00, Frango com batata doce").
-function parseDietaTexto(texto) {
+// Se o arquivo indicar dias (ex: "Segunda" seguido das refeições daquele
+// dia), as refeições são organizadas por dia da semana. Caso contrário, a
+// mesma lista de refeições é aplicada automaticamente a todos os dias.
+function parseDietaArquivo(texto) {
   const linhas = texto.split(/\r?\n/);
-  const refeicoes = [];
+  const out = {};
+  const soltas = [];
+  let atual = null;
   for (const raw of linhas) {
     const linha = raw.trim();
     if (!linha) continue;
-    const m = linha.match(/^(\d{1,2}):?(\d{2})\s*[-–:|,]?\s*(.*)$/);
-    if (m) {
-      const horario = `${m[1].padStart(2, "0")}:${m[2]}`;
-      const opcoes = m[3].trim();
-      if (opcoes) refeicoes.push({ id: uid(), horario, opcoes, notificar: true });
-    }
+    const dia = matchDia(linha);
+    if (dia) { atual = dia; if (!out[atual]) out[atual] = []; continue; }
+    const refeicao = parseLinhaRefeicao(linha);
+    if (!refeicao) continue;
+    if (atual) out[atual].push(refeicao);
+    else soltas.push(refeicao);
   }
-  return refeicoes;
+  if (Object.keys(out).length === 0 && soltas.length > 0) {
+    DIAS.forEach((d) => { out[d] = soltas.map((r) => ({ ...r, id: uid() })); });
+    return { dias: out, distribuido: true, total: soltas.length };
+  }
+  return { dias: out, distribuido: false, total: soltas.length };
 }
 
 const RECEITAS = [
@@ -129,6 +166,28 @@ function notify(title, body) {
   }
 }
 
+// Dados antigos podem ter vindo em formatos legados: refeições como lista
+// única (aplicada a todos os dias) e tarefas com tipos antigos
+// ("personalizado" -> "semanal", "prazo" -> "pontual").
+function migrarRefeicoes(rf) {
+  if (Array.isArray(rf)) {
+    const out = {};
+    DIAS.forEach((d) => { out[d] = rf.map((r) => ({ ...r })); });
+    return out;
+  }
+  return rf || {};
+}
+function migrarTarefas(ts) {
+  return (ts || []).map((t) => {
+    if (t.tipo === "personalizado") return { ...t, tipo: "semanal" };
+    if (t.tipo === "prazo") {
+      const { prazoData, ...resto } = t;
+      return { ...resto, tipo: "pontual", data: prazoData || todayKey() };
+    }
+    return t;
+  });
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const { user, loadingAuth, signOut } = useAuth();
@@ -141,7 +200,7 @@ export default function Dashboard() {
   const [exStatus, setExStatus] = useState({});
   const [pesoEvo, setPesoEvo] = useState([]);
   const [aguaLog, setAguaLog] = useState({});
-  const [refeicoes, setRefeicoes] = useState([]);
+  const [refeicoes, setRefeicoes] = useState({});
   const [dietaArquivo, setDietaArquivo] = useState(null);
   const [timerCfg, setTimerCfg] = useState({ segundos: 90 });
   const [tarefas, setTarefas] = useState([]);
@@ -159,11 +218,11 @@ export default function Dashboard() {
       setPerfil(p);
       const [f, c, es, pe, al, rf, da, tc, tf] = await Promise.all([
         loadField(e.uid, K.ficha, {}), loadField(e.uid, K.checkins, []), loadField(e.uid, K.exStatus, {}),
-        loadField(e.uid, K.pesoEvo, []), loadField(e.uid, K.aguaLog, {}), loadField(e.uid, K.refeicoes, []),
+        loadField(e.uid, K.pesoEvo, []), loadField(e.uid, K.aguaLog, {}), loadField(e.uid, K.refeicoes, {}),
         loadField(e.uid, K.dietaArquivo, null), loadField(e.uid, K.timerCfg, { segundos: 90 }), loadField(e.uid, K.tarefas, []),
       ]);
       setFicha(f); setCheckins(c); setExStatus(es); setPesoEvo(pe);
-      setAguaLog(al); setRefeicoes(rf); setDietaArquivo(da); setTimerCfg(tc); setTarefas(tf);
+      setAguaLog(al); setRefeicoes(migrarRefeicoes(rf)); setDietaArquivo(da); setTimerCfg(tc); setTarefas(migrarTarefas(tf));
       setLoaded(true);
     })();
   }, [user, loadingAuth, router]);
@@ -201,7 +260,7 @@ export default function Dashboard() {
           }
         });
       }
-      refeicoes.forEach((r) => {
+      (refeicoes[todayDia()] || []).forEach((r) => {
         if (r.notificar === false) return;
         const key = `ref-${dayTag}-${r.id}`;
         if (r.horario === hhmm && !notifiedRef.current.has(key)) {
@@ -212,7 +271,7 @@ export default function Dashboard() {
       });
       tarefas.forEach((t) => {
         if (!t.notificar || !t.horario) return;
-        if (t.concluidoEm === dayTag) return;
+        if (!tarefaEhHoje(t) || tarefaConcluidaHoje(t)) return;
         const key = `tarefa-${dayTag}-${t.id}`;
         if (t.horario === hhmm && !notifiedRef.current.has(key)) {
           notifiedRef.current.add(key);
@@ -318,11 +377,13 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const importada = parseFichaArquivo(String(reader.result));
+      const { dias: importada, distribuido } = parseFichaArquivo(String(reader.result));
       const dias = Object.keys(importada);
       if (!dias.length) { showToast("Não encontramos exercícios reconhecíveis nesse arquivo."); return; }
       setFicha((f) => ({ ...f, ...importada }));
-      showToast(`Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
+      showToast(distribuido
+        ? `Ficha importada: exercícios distribuídos automaticamente em ${dias.length} dia(s) (seg-sex).`
+        : `Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -558,7 +619,8 @@ function Agua({ perfil, aguaLog, setAguaLog, horariosAgua, mlPorLembrete, notifP
 
 /* ---------------- Dieta ---------------- */
 function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPerm, pedirPermissao, showToast }) {
-  const [sub, setSub] = useState("refeicoes");
+  const [sub, setSub] = useState("hoje");
+  const [diaEdit, setDiaEdit] = useState(todayDia());
   const fileRef = useRef(null);
   const onFile = (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -567,12 +629,15 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
     reader.onload = () => {
       setDietaArquivo({ nome: file.name, tipo: isText ? "texto" : "arquivo", conteudo: reader.result });
       if (isText) {
-        const importadas = parseDietaTexto(String(reader.result));
-        if (importadas.length) {
-          setRefeicoes((r) => [...r, ...importadas]);
-          showToast(`Dieta enviada — ${importadas.length} refeição(ões) lançada(s) com lembrete ativado.`);
-        } else {
+        const { dias: importadas, distribuido, total } = parseDietaArquivo(String(reader.result));
+        const dias = Object.keys(importadas);
+        if (!dias.length) {
           showToast("Dieta enviada, mas nenhum horário de refeição foi reconhecido no arquivo.");
+        } else {
+          setRefeicoes((r) => ({ ...r, ...importadas }));
+          showToast(distribuido
+            ? `Dieta enviada — ${total} refeição(ões) distribuída(s) automaticamente em todos os dias da semana.`
+            : `Dieta enviada — refeições organizadas em ${dias.length} dia(s) da semana.`);
         }
       } else {
         showToast("Dieta enviada com sucesso. Envie um arquivo .txt/.csv/.md para lançar as refeições automaticamente.");
@@ -581,31 +646,54 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
     if (isText) reader.readAsText(file); else reader.readAsDataURL(file);
     e.target.value = "";
   };
-  const addRefeicao = () => setRefeicoes((r) => [...r, { id: uid(), horario: "12:00", opcoes: "", notificar: true }]);
-  const updRefeicao = (id, patch) => setRefeicoes((r) => r.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const delRefeicao = (id) => setRefeicoes((r) => r.filter((x) => x.id !== id));
-  const SUBTABS = [{ id: "refeicoes", label: "Refeições" }, { id: "arquivo", label: "Arquivo" }, { id: "receitas", label: "Receitas" }];
+  const addRefeicao = (dia) => setRefeicoes((r) => ({ ...r, [dia]: [...(r[dia] || []), { id: uid(), horario: "12:00", opcoes: "", notificar: true }] }));
+  const updRefeicao = (dia, id, patch) => setRefeicoes((r) => ({ ...r, [dia]: (r[dia] || []).map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  const delRefeicao = (dia, id) => setRefeicoes((r) => ({ ...r, [dia]: (r[dia] || []).filter((x) => x.id !== id) }));
+  const refeicoesHoje = [...(refeicoes[todayDia()] || [])].sort((a, b) => (a.horario || "").localeCompare(b.horario || ""));
+  const SUBTABS = [{ id: "hoje", label: "Hoje" }, { id: "refeicoes", label: "Refeições" }, { id: "arquivo", label: "Arquivo" }, { id: "receitas", label: "Receitas" }];
 
   return (
     <div>
       <SubNav items={SUBTABS} value={sub} onChange={setSub} accent="#C9A227" />
-      {sub === "refeicoes" && (
+      {sub === "hoje" && (
         <div className="mt-4 space-y-2">
-          {refeicoes.length === 0 && <EmptyState text="Cadastre os horários das suas refeições para receber lembretes com as opções da dieta." />}
-          {refeicoes.map((r) => (
-            <div key={r.id} className="card-white p-3">
-              <div className="flex items-center gap-2">
-                <input type="time" value={r.horario} onChange={(e) => updRefeicao(r.id, { horario: e.target.value })} className="font-mono text-sm px-2 py-1.5 rounded-full" style={{ border: "1px solid #C7CBC2" }} />
-                <input placeholder="Opções da refeição" value={r.opcoes} onChange={(e) => updRefeicao(r.id, { opcoes: e.target.value })} className="flex-1 text-sm px-3 py-1.5 rounded-full" style={{ border: "1px solid #C7CBC2" }} />
-                <button onClick={() => delRefeicao(r.id)}><Trash2 size={16} color="#B0473A" /></button>
+          <p className="font-mono text-xs mb-2" style={{ color: "#5C6570" }}>{DIA_LABEL[todayDia()].toUpperCase()} · REFEIÇÕES DE HOJE</p>
+          {refeicoesHoje.length === 0 ? <EmptyState text="Nenhuma refeição cadastrada para hoje. Vá em 'Refeições' e adicione, ou importe um arquivo da dieta." /> : refeicoesHoje.map((r) => (
+            <div key={r.id} className="card-white p-3 flex items-center justify-between gap-2">
+              <div>
+                <p className="font-mono text-xs" style={{ color: "#7A828A" }}>{r.horario}</p>
+                <p className="font-semibold text-sm" style={{ color: "#1C2320" }}>{r.opcoes}</p>
               </div>
-              <label className="flex items-center gap-1.5 mt-2 pl-1 text-xs cursor-pointer" style={{ color: "#5C6570" }}>
-                <input type="checkbox" checked={r.notificar !== false} onChange={(e) => updRefeicao(r.id, { notificar: e.target.checked })} className="toggle-check" />
-                <Bell size={11} /> Notificar esta refeição
-              </label>
+              {r.notificar !== false && <span className="flex items-center gap-1 font-mono text-[10px] shrink-0" style={{ color: "#C9A227" }}><Bell size={10} /> notifica</span>}
             </div>
           ))}
-          <button onClick={addRefeicao} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-display text-sm uppercase tracking-wide btn-press" style={{ border: "2px dashed #C7CBC2", color: "#5C6570" }}><Plus size={16} /> Adicionar refeição</button>
+        </div>
+      )}
+      {sub === "refeicoes" && (
+        <div className="mt-4">
+          <div className="flex gap-1 overflow-x-auto pb-2">
+            {DIAS.map((d) => (
+              <button key={d} onClick={() => setDiaEdit(d)} className="font-mono text-xs px-3 py-1.5 rounded-full shrink-0 btn-press" style={{ background: diaEdit === d ? "#1C2320" : "#fff", color: diaEdit === d ? "#fff" : "#5C6570", border: "1px solid #DCDFD8" }}>
+                {DIA_LABEL[d].slice(0, 3).toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 space-y-2">
+            {(refeicoes[diaEdit] || []).map((r) => (
+              <div key={r.id} className="card-white p-3">
+                <div className="flex items-center gap-2">
+                  <input type="time" value={r.horario} onChange={(e) => updRefeicao(diaEdit, r.id, { horario: e.target.value })} className="font-mono text-sm px-2 py-1.5 rounded-full" style={{ border: "1px solid #C7CBC2" }} />
+                  <input placeholder="Opções da refeição" value={r.opcoes} onChange={(e) => updRefeicao(diaEdit, r.id, { opcoes: e.target.value })} className="flex-1 text-sm px-3 py-1.5 rounded-full" style={{ border: "1px solid #C7CBC2" }} />
+                  <button onClick={() => delRefeicao(diaEdit, r.id)}><Trash2 size={16} color="#B0473A" /></button>
+                </div>
+                <label className="flex items-center gap-1.5 mt-2 pl-1 text-xs cursor-pointer" style={{ color: "#5C6570" }}>
+                  <input type="checkbox" checked={r.notificar !== false} onChange={(e) => updRefeicao(diaEdit, r.id, { notificar: e.target.checked })} className="toggle-check" />
+                  <Bell size={11} /> Notificar esta refeição
+                </label>
+              </div>
+            ))}
+            <button onClick={() => addRefeicao(diaEdit)} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-display text-sm uppercase tracking-wide btn-press" style={{ border: "2px dashed #C7CBC2", color: "#5C6570" }}><Plus size={16} /> Adicionar refeição em {DIA_LABEL[diaEdit]}</button>
+          </div>
           <NotifButton notifPerm={notifPerm} pedirPermissao={pedirPermissao} />
         </div>
       )}
@@ -614,7 +702,7 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
           <input ref={fileRef} type="file" className="hidden" onChange={onFile} accept=".txt,.csv,.md,.pdf,image/*" />
           <button onClick={() => fileRef.current.click()} className="w-full flex items-center justify-center gap-2 py-4 rounded-full font-display text-sm uppercase tracking-wide text-white btn-press" style={{ background: "#C9A227" }}><Upload size={16} /> Enviar arquivo da dieta</button>
           <p className="text-[11px] mt-1.5" style={{ color: "#7A828A" }}>
-            Envie um arquivo .txt/.csv/.md com uma refeição por linha, começando pelo horário (ex: "07:00 - Ovos e aveia") para que as refeições sejam lançadas e notificadas automaticamente. Arquivos em PDF/imagem ficam salvos para consulta, mas não são lidos automaticamente.
+            Envie um arquivo .txt/.csv/.md com uma refeição por linha, começando pelo horário (ex: "07:00 - Ovos e aveia"). Se o arquivo indicar dias (ex: "Segunda" seguido das refeições daquele dia), elas são organizadas por dia da semana; caso contrário, a mesma lista é aplicada automaticamente a todos os dias. Arquivos em PDF/imagem ficam salvos para consulta, mas não são lidos automaticamente.
           </p>
           {dietaArquivo && (
             <div className="mt-4 card-white p-3">
@@ -651,15 +739,22 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
 }
 
 /* ---------------- Casa ---------------- */
+// Três tipos de tarefa: "diaria" (todo dia), "semanal" (dias fixos da
+// semana, repete toda semana) e "pontual" (tarefa avulsa/spot, ligada a
+// uma única data, sem repetição). Tipos antigos ("personalizado"/"prazo")
+// são migrados em migrarTarefas() ao carregar os dados.
 function tarefaEhHoje(t) {
   if (t.tipo === "diaria") return true;
-  if (t.tipo === "semanal" || t.tipo === "personalizado") return (t.diasSemana || []).includes(todayDia());
-  if (t.tipo === "prazo") return true; // prazos aparecem sempre até serem concluídos
+  if (t.tipo === "semanal") return (t.diasSemana || []).includes(todayDia());
+  if (t.tipo === "pontual") return t.data === todayKey() || (!t.concluida && !!t.data && t.data < todayKey());
   return true;
 }
 function tarefaConcluidaHoje(t) {
-  if (t.tipo === "prazo") return !!t.concluida;
+  if (t.tipo === "pontual") return !!t.concluida;
   return t.concluidoEm === todayKey();
+}
+function tarefaAtrasada(t) {
+  return t.tipo === "pontual" && !t.concluida && !!t.data && t.data < todayKey();
 }
 
 function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
@@ -668,7 +763,7 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
   const toggleConcluir = (t) => {
     setTarefas((ts) => ts.map((x) => {
       if (x.id !== t.id) return x;
-      if (x.tipo === "prazo") return { ...x, concluida: !x.concluida };
+      if (x.tipo === "pontual") return { ...x, concluida: !x.concluida };
       const jaConcluida = x.concluidoEm === todayKey();
       return { ...x, concluidoEm: jaConcluida ? null : todayKey() };
     }));
@@ -686,7 +781,7 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
     <div className="mt-2">
       <p className="font-mono text-xs mb-2" style={{ color: "#5C6570" }}>{DIA_LABEL[todayDia()].toUpperCase()} · TAREFAS DE HOJE</p>
 
-      {hojeList.length === 0 && <EmptyState text="Nenhuma tarefa por aqui ainda. Adicione tarefas diárias, personalizadas ou com prazo." />}
+      {hojeList.length === 0 && <EmptyState text="Nenhuma tarefa por aqui ainda. Adicione tarefas diárias, semanais ou pontuais (sem repetição)." />}
 
       <div className="space-y-2">
         {hojeList.map((t) => {
@@ -700,7 +795,8 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
                 <div className="flex-1">
                   <p className="font-semibold text-sm" style={{ color: "#1C2320", textDecoration: feita ? "line-through" : "none" }}>{t.titulo}</p>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    <TagTipo tipo={t.tipo} prazoData={t.prazoData} diasSemana={t.diasSemana} />
+                    <TagTipo tipo={t.tipo} data={t.data} diasSemana={t.diasSemana} />
+                    {tarefaAtrasada(t) && <span className="font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#F6DCD8", color: "#B0473A" }}>atrasada</span>}
                     {t.horario && <span className="font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}>{t.horario}</span>}
                     {t.notificar && <span className="flex items-center gap-0.5 font-mono text-[10px]" style={{ color: "#6E7BC9" }}><Bell size={10} /> notifica</span>}
                   </div>
@@ -725,17 +821,17 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
   );
 }
 
-function TagTipo({ tipo, prazoData, diasSemana }) {
+function TagTipo({ tipo, data, diasSemana }) {
   if (tipo === "diaria") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><Repeat size={10} /> diária</span>;
-  if (tipo === "semanal" || tipo === "personalizado") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarDays size={10} /> {(diasSemana || []).map((d) => d.slice(0, 3)).join(", ")}</span>;
-  return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarClock size={10} /> até {prazoData}</span>;
+  if (tipo === "semanal") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarDays size={10} /> {(diasSemana || []).map((d) => d.slice(0, 3)).join(", ")}</span>;
+  return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarClock size={10} /> {data}</span>;
 }
 
 function FormTarefa({ onSalvar, onCancelar }) {
   const [titulo, setTitulo] = useState("");
   const [tipo, setTipo] = useState("diaria");
   const [diasSemana, setDiasSemana] = useState([todayDia()]);
-  const [prazoData, setPrazoData] = useState(todayKey());
+  const [data, setData] = useState(todayKey());
   const [horario, setHorario] = useState("");
   const [notificar, setNotificar] = useState(true);
 
@@ -743,7 +839,11 @@ function FormTarefa({ onSalvar, onCancelar }) {
 
   const salvar = () => {
     if (!titulo.trim()) return;
-    onSalvar({ titulo: titulo.trim(), tipo, diasSemana: tipo === "personalizado" ? diasSemana : undefined, prazoData: tipo === "prazo" ? prazoData : undefined, horario: horario || undefined, notificar: notificar && !!horario });
+    const nova = { titulo: titulo.trim(), tipo };
+    if (tipo === "semanal") nova.diasSemana = diasSemana;
+    if (tipo === "pontual") nova.data = data;
+    if (horario) { nova.horario = horario; nova.notificar = notificar; }
+    onSalvar(nova);
   };
 
   return (
@@ -753,12 +853,12 @@ function FormTarefa({ onSalvar, onCancelar }) {
 
       <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>REPETIÇÃO</p>
       <div className="flex gap-2 mb-3">
-        {[{ id: "diaria", label: "Diária" }, { id: "personalizado", label: "Personalizado" }, { id: "prazo", label: "Prazo" }].map((o) => (
+        {[{ id: "diaria", label: "Diária" }, { id: "semanal", label: "Semanal" }, { id: "pontual", label: "Pontual" }].map((o) => (
           <button key={o.id} onClick={() => setTipo(o.id)} className="flex-1 font-mono text-xs py-2 rounded-full btn-press" style={{ background: tipo === o.id ? "#6E7BC9" : "#fff", color: tipo === o.id ? "#fff" : "#5C6570", border: "1px solid #C7CBC2" }}>{o.label}</button>
         ))}
       </div>
 
-      {tipo === "personalizado" && (
+      {tipo === "semanal" && (
         <div className="mb-3">
           <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>REPETIR NOS DIAS (ex: terça, quinta e sábado)</p>
           <div className="flex gap-1 flex-wrap">
@@ -768,10 +868,10 @@ function FormTarefa({ onSalvar, onCancelar }) {
           </div>
         </div>
       )}
-      {tipo === "prazo" && (
+      {tipo === "pontual" && (
         <div className="mb-3">
-          <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>ATÉ QUANDO</p>
-          <input type="date" value={prazoData} onChange={(e) => setPrazoData(e.target.value)} className="input" />
+          <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>DATA (TAREFA AVULSA, SEM REPETIÇÃO)</p>
+          <input type="date" value={data} onChange={(e) => setData(e.target.value)} className="input" />
         </div>
       )}
 
