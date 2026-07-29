@@ -15,7 +15,7 @@ import { ativarPushNotifications } from "@/lib/messaging";
 const K = {
   ficha: "ficha-treino", checkins: "checkins", exStatus: "exercicio-status",
   pesoEvo: "evolucao-peso", aguaLog: "agua-log", refeicoes: "dieta-refeicoes",
-  dietaArquivo: "dieta-arquivo", timerCfg: "rest-timer-config", tarefas: "casa-tarefas",
+  dietaArquivo: "dieta-arquivo", fichaArquivo: "ficha-arquivo", timerCfg: "rest-timer-config", tarefas: "casa-tarefas",
 };
 
 const DIAS = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
@@ -202,6 +202,7 @@ export default function Dashboard() {
   const [aguaLog, setAguaLog] = useState({});
   const [refeicoes, setRefeicoes] = useState({});
   const [dietaArquivo, setDietaArquivo] = useState(null);
+  const [fichaArquivo, setFichaArquivo] = useState(null);
   const [timerCfg, setTimerCfg] = useState({ segundos: 90 });
   const [tarefas, setTarefas] = useState([]);
   const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
@@ -216,13 +217,14 @@ export default function Dashboard() {
       const p = await loadPerfilAgua(e.uid);
       if (!p) { router.replace("/questionario"); return; }
       setPerfil(p);
-      const [f, c, es, pe, al, rf, da, tc, tf] = await Promise.all([
+      const [f, c, es, pe, al, rf, da, fa, tc, tf] = await Promise.all([
         loadField(e.uid, K.ficha, {}), loadField(e.uid, K.checkins, []), loadField(e.uid, K.exStatus, {}),
         loadField(e.uid, K.pesoEvo, []), loadField(e.uid, K.aguaLog, {}), loadField(e.uid, K.refeicoes, {}),
-        loadField(e.uid, K.dietaArquivo, null), loadField(e.uid, K.timerCfg, { segundos: 90 }), loadField(e.uid, K.tarefas, []),
+        loadField(e.uid, K.dietaArquivo, null), loadField(e.uid, K.fichaArquivo, null),
+        loadField(e.uid, K.timerCfg, { segundos: 90 }), loadField(e.uid, K.tarefas, []),
       ]);
       setFicha(f); setCheckins(c); setExStatus(es); setPesoEvo(pe);
-      setAguaLog(al); setRefeicoes(migrarRefeicoes(rf)); setDietaArquivo(da); setTimerCfg(tc); setTarefas(migrarTarefas(tf));
+      setAguaLog(al); setRefeicoes(migrarRefeicoes(rf)); setDietaArquivo(da); setFichaArquivo(fa); setTimerCfg(tc); setTarefas(migrarTarefas(tf));
       setLoaded(true);
     })();
   }, [user, loadingAuth, router]);
@@ -234,6 +236,7 @@ export default function Dashboard() {
   useEffect(() => { if (loaded && user) saveField(user.uid, K.aguaLog, aguaLog); }, [aguaLog, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.refeicoes, refeicoes); }, [refeicoes, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.dietaArquivo, dietaArquivo); }, [dietaArquivo, loaded]);
+  useEffect(() => { if (loaded && user) saveField(user.uid, K.fichaArquivo, fichaArquivo); }, [fichaArquivo, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.timerCfg, timerCfg); }, [timerCfg, loaded]);
   useEffect(() => { if (loaded && user) saveField(user.uid, K.tarefas, tarefas); }, [tarefas, loaded]);
 
@@ -344,7 +347,7 @@ export default function Dashboard() {
         ) : (
           <div key={tab} className="tab-panel">
             {tab === "academia" && (
-              <Academia {...{ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, showToast }} />
+              <Academia {...{ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, fichaArquivo, setFichaArquivo, showToast }} />
             )}
             {tab === "agua" && (
               <Agua {...{ perfil, aguaLog, setAguaLog, horariosAgua, mlPorLembrete, notifPerm, pedirPermissao, router, toggleNotificarAgua }} />
@@ -369,7 +372,7 @@ export default function Dashboard() {
 }
 
 /* ---------------- Academia ---------------- */
-function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, showToast }) {
+function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, fichaArquivo, setFichaArquivo, showToast }) {
   const [sub, setSub] = useState("hoje");
   const [diaEdit, setDiaEdit] = useState(todayDia());
   const fichaFileRef = useRef(null);
@@ -377,10 +380,12 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const { dias: importada, distribuido } = parseFichaArquivo(String(reader.result));
+      const conteudo = String(reader.result);
+      const { dias: importada, distribuido } = parseFichaArquivo(conteudo);
       const dias = Object.keys(importada);
       if (!dias.length) { showToast("Não encontramos exercícios reconhecíveis nesse arquivo."); return; }
       setFicha((f) => ({ ...f, ...importada }));
+      setFichaArquivo({ nome: file.name, conteudo });
       showToast(distribuido
         ? `Ficha importada: exercícios distribuídos automaticamente em ${dias.length} dia(s) (seg-sex).`
         : `Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
@@ -388,6 +393,7 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
     reader.readAsText(file);
     e.target.value = "";
   };
+  const removeFichaArquivo = () => { setFichaArquivo(null); showToast("Arquivo da ficha removido."); };
   const jaCheckouHoje = checkins.includes(todayKey());
   const doCheckin = () => {
     if (jaCheckouHoje) { showToast("Você já fez check-in hoje 💪"); return; }
@@ -439,6 +445,17 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
           <p className="text-[11px] mt-1.5 mb-3" style={{ color: "#7A828A" }}>
             Arquivo .txt/.csv/.md com o nome do dia em uma linha (ex: "Segunda") seguido dos exercícios, um por linha ("Agachamento - 4x10"). Os dias encontrados no arquivo substituem os exercícios já cadastrados.
           </p>
+          {fichaArquivo && (
+            <div className="mb-3 card-white p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileText size={16} color="#5C6570" className="shrink-0" />
+                  <span className="font-mono text-xs truncate" style={{ color: "#1C2320" }}>{fichaArquivo.nome}</span>
+                </div>
+                <button onClick={removeFichaArquivo} className="shrink-0" title="Excluir arquivo anexado"><Trash2 size={16} color="#B0473A" /></button>
+              </div>
+            </div>
+          )}
           <div className="flex gap-1 overflow-x-auto pb-2">
             {DIAS.map((d) => (
               <button key={d} onClick={() => setDiaEdit(d)} className="font-mono text-xs px-3 py-1.5 rounded-full shrink-0 btn-press" style={{ background: diaEdit === d ? "#1C2320" : "#fff", color: diaEdit === d ? "#fff" : "#5C6570", border: "1px solid #DCDFD8" }}>
@@ -646,6 +663,7 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
     if (isText) reader.readAsText(file); else reader.readAsDataURL(file);
     e.target.value = "";
   };
+  const removeDietaArquivo = () => { setDietaArquivo(null); showToast("Arquivo da dieta removido."); };
   const addRefeicao = (dia) => setRefeicoes((r) => ({ ...r, [dia]: [...(r[dia] || []), { id: uid(), horario: "12:00", opcoes: "", notificar: true }] }));
   const updRefeicao = (dia, id, patch) => setRefeicoes((r) => ({ ...r, [dia]: (r[dia] || []).map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
   const delRefeicao = (dia, id) => setRefeicoes((r) => ({ ...r, [dia]: (r[dia] || []).filter((x) => x.id !== id) }));
@@ -706,9 +724,12 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
           </p>
           {dietaArquivo && (
             <div className="mt-4 card-white p-3">
-              <div className="flex items-center gap-2 mb-2">
-                {dietaArquivo.tipo === "texto" ? <FileText size={16} color="#5C6570" /> : <ImageIcon size={16} color="#5C6570" />}
-                <span className="font-mono text-xs" style={{ color: "#1C2320" }}>{dietaArquivo.nome}</span>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  {dietaArquivo.tipo === "texto" ? <FileText size={16} color="#5C6570" className="shrink-0" /> : <ImageIcon size={16} color="#5C6570" className="shrink-0" />}
+                  <span className="font-mono text-xs truncate" style={{ color: "#1C2320" }}>{dietaArquivo.nome}</span>
+                </div>
+                <button onClick={removeDietaArquivo} className="shrink-0" title="Excluir arquivo anexado"><Trash2 size={16} color="#B0473A" /></button>
               </div>
               {dietaArquivo.tipo === "texto" ? (
                 <pre className="text-xs whitespace-pre-wrap max-h-64 overflow-auto" style={{ color: "#1C2320" }}>{dietaArquivo.conteudo}</pre>
