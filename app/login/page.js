@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { Mail, ArrowRight, CheckCircle2 } from "lucide-react";
 import {
   sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink,
+  GoogleAuthProvider, signInWithRedirect, getRedirectResult,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/AuthProvider";
@@ -28,6 +29,7 @@ export default function LoginPage() {
     }
   }, [user, loadingAuth, router]);
 
+  // Conclui login via link de e-mail (quando o usuário volta pelo link recebido)
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (isSignInWithEmailLink(auth, window.location.href)) {
@@ -38,6 +40,18 @@ export default function LoginPage() {
         .then(() => { window.localStorage.removeItem(EMAIL_STORAGE_KEY); router.replace("/"); })
         .catch((err) => { console.error(err); setErro("Não foi possível concluir o login. Peça um novo link."); setCompletando(false); });
     }
+  }, [router]);
+
+  // Conclui login via Google (quando o usuário volta do redirect do Google)
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) router.replace("/");
+      })
+      .catch((err) => {
+        console.error(err);
+        setErro("Não foi possível concluir o login com Google. Tente de novo.");
+      });
   }, [router]);
 
   const enviarLink = async (e) => {
@@ -52,6 +66,16 @@ export default function LoginPage() {
     } catch (err) {
       console.error(err);
       setErro("Não foi possível enviar o link. Confira se o e-mail está correto e tente de novo.");
+    }
+  };
+
+  const entrarComGoogle = async () => {
+    setErro("");
+    try {
+      await signInWithRedirect(auth, new GoogleAuthProvider());
+    } catch (err) {
+      console.error(err);
+      setErro("Não foi possível entrar com Google. Tente de novo.");
     }
   };
 
@@ -77,20 +101,38 @@ export default function LoginPage() {
               <button onClick={() => setEnviado(false)} className="text-xs mt-4 underline" style={{ color: "#7A828A" }}>usar outro e-mail</button>
             </div>
           ) : (
-            <form onSubmit={enviarLink}>
-              <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>E-MAIL</p>
-              <div className="flex items-center gap-2 px-4 py-3 rounded-full mb-1" style={{ background: "#fff", border: "1px solid #C7CBC2" }}>
-                <Mail size={16} color="#7A828A" />
-                <input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setErro(""); }}
-                  placeholder="voce@email.com" className="flex-1 outline-none text-sm bg-transparent" style={{ color: "#1C2320" }} autoFocus />
-              </div>
-              {erro && <p className="text-xs mt-1 px-1" style={{ color: "#B0473A" }}>{erro}</p>}
+            <>
+              <form onSubmit={enviarLink}>
+                <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>E-MAIL</p>
+                <div className="flex items-center gap-2 px-4 py-3 rounded-full mb-1" style={{ background: "#fff", border: "1px solid #C7CBC2" }}>
+                  <Mail size={16} color="#7A828A" />
+                  <input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setErro(""); }}
+                    placeholder="voce@email.com" className="flex-1 outline-none text-sm bg-transparent" style={{ color: "#1C2320" }} autoFocus />
+                </div>
+                {erro && <p className="text-xs mt-1 px-1" style={{ color: "#B0473A" }}>{erro}</p>}
 
-              <button type="submit" className="w-full mt-5 py-3 rounded-full font-display uppercase tracking-wide text-white flex items-center justify-center gap-2 btn-press" style={{ background: "#E8462B" }}>
-                Enviar link de acesso <ArrowRight size={16} />
+                <button type="submit" className="w-full mt-5 py-3 rounded-full font-display uppercase tracking-wide text-white flex items-center justify-center gap-2 btn-press" style={{ background: "#E8462B" }}>
+                  Enviar link de acesso <ArrowRight size={16} />
+                </button>
+              </form>
+
+              <div className="flex items-center gap-3 my-4">
+                <div style={{ flex: 1, height: 1, background: "#C7CBC2" }} />
+                <span className="text-xs" style={{ color: "#7A828A" }}>ou</span>
+                <div style={{ flex: 1, height: 1, background: "#C7CBC2" }} />
+              </div>
+
+              <button
+                type="button"
+                onClick={entrarComGoogle}
+                className="w-full py-3 rounded-full font-display uppercase tracking-wide flex items-center justify-center gap-2 btn-press"
+                style={{ background: "#fff", border: "1px solid #C7CBC2", color: "#1C2320" }}
+              >
+                Entrar com Google
               </button>
+
               <p className="text-xs mt-4 text-center" style={{ color: "#7A828A" }}>Sem senha: você recebe um link por e-mail para entrar com segurança.</p>
-            </form>
+            </>
           )}
         </div>
       </div>
