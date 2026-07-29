@@ -5,3 +5,4 @@ out
 .vercel
 *.log
 public/firebase-messaging-sw.js
+.claude/

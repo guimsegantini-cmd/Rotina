@@ -42,6 +42,69 @@ const dicaPara = (nome) => {
   return f ? f.d : "Priorize a execução controlada e evite compensar com outras articulações.";
 };
 
+const normalizeStr = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const DIA_ALIASES = {
+  dom: "dom", domingo: "dom",
+  seg: "seg", segunda: "seg", "segunda-feira": "seg",
+  ter: "ter", terca: "ter", "terca-feira": "ter",
+  qua: "qua", quarta: "qua", "quarta-feira": "qua",
+  qui: "qui", quinta: "qui", "quinta-feira": "qui",
+  sex: "sex", sexta: "sex", "sexta-feira": "sex",
+  sab: "sab", sabado: "sab",
+};
+const matchDia = (linha) => DIA_ALIASES[normalizeStr(linha).replace(/:$/, "")] || null;
+
+// Aceita um arquivo de texto com o nome do dia em uma linha (ex: "Segunda")
+// seguido pelos exercícios daquele dia, um por linha (ex: "Agachamento - 4x10"),
+// ou linhas no formato CSV "dia,exercicio,series".
+function parseFichaArquivo(texto) {
+  const linhas = texto.split(/\r?\n/);
+  const out = {};
+  let atual = null;
+  for (const raw of linhas) {
+    const linha = raw.trim();
+    if (!linha) continue;
+    const dia = matchDia(linha);
+    if (dia) { atual = dia; if (!out[atual]) out[atual] = []; continue; }
+    if (!atual) {
+      const partes = linha.split(/[,;]/).map((p) => p.trim());
+      if (partes.length >= 2) {
+        const d = matchDia(partes[0]);
+        if (d) { if (!out[d]) out[d] = []; out[d].push({ id: uid(), nome: partes[1] || "", series: partes[2] || "" }); }
+      }
+      continue;
+    }
+    let nome = linha, series = "";
+    const partesTraco = linha.split(/\s+-\s+|\s*\|\s*/);
+    if (partesTraco.length >= 2) {
+      nome = partesTraco[0].trim(); series = partesTraco.slice(1).join(" ").trim();
+    } else {
+      const m = linha.match(/^(.*?)[,;]\s*(\d+\s*[xX]\s*\d+.*)$/) || linha.match(/^(.*?)\s+(\d+\s*[xX]\s*\d+)\s*$/);
+      if (m) { nome = m[1].trim(); series = m[2].trim(); }
+    }
+    if (nome) out[atual].push({ id: uid(), nome, series });
+  }
+  return out;
+}
+
+// Aceita um arquivo de texto com uma refeição por linha, começando pelo
+// horário (ex: "07:00 - Ovos e aveia" ou "12:00, Frango com batata doce").
+function parseDietaTexto(texto) {
+  const linhas = texto.split(/\r?\n/);
+  const refeicoes = [];
+  for (const raw of linhas) {
+    const linha = raw.trim();
+    if (!linha) continue;
+    const m = linha.match(/^(\d{1,2}):?(\d{2})\s*[-–:|,]?\s*(.*)$/);
+    if (m) {
+      const horario = `${m[1].padStart(2, "0")}:${m[2]}`;
+      const opcoes = m[3].trim();
+      if (opcoes) refeicoes.push({ id: uid(), horario, opcoes, notificar: true });
+    }
+  }
+  return refeicoes;
+}
+
 const RECEITAS = [
   { nome: "Frango desfiado com batata doce", desc: "Proteína magra + carboidrato de baixo índice glicêmico." },
   { nome: "Omelete de claras com espinafre", desc: "Rápida, rica em proteína, ótima para o café da manhã." },
@@ -250,6 +313,20 @@ export default function Dashboard() {
 function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatus, pesoEvo, setPesoEvo, timerCfg, setTimerCfg, showToast }) {
   const [sub, setSub] = useState("hoje");
   const [diaEdit, setDiaEdit] = useState(todayDia());
+  const fichaFileRef = useRef(null);
+  const onFichaFile = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const importada = parseFichaArquivo(String(reader.result));
+      const dias = Object.keys(importada);
+      if (!dias.length) { showToast("Não encontramos exercícios reconhecíveis nesse arquivo."); return; }
+      setFicha((f) => ({ ...f, ...importada }));
+      showToast(`Ficha importada: ${dias.length} dia(s) atualizados com os exercícios do arquivo.`);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
   const jaCheckouHoje = checkins.includes(todayKey());
   const doCheckin = () => {
     if (jaCheckouHoje) { showToast("Você já fez check-in hoje 💪"); return; }
@@ -294,6 +371,13 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
       )}
       {sub === "ficha" && (
         <div className="mt-4">
+          <input ref={fichaFileRef} type="file" className="hidden" onChange={onFichaFile} accept=".txt,.csv,.md" />
+          <button onClick={() => fichaFileRef.current.click()} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-display text-xs uppercase tracking-wide text-white btn-press" style={{ background: "#E8462B" }}>
+            <Upload size={15} /> Importar ficha de arquivo
+          </button>
+          <p className="text-[11px] mt-1.5 mb-3" style={{ color: "#7A828A" }}>
+            Arquivo .txt/.csv/.md com o nome do dia em uma linha (ex: "Segunda") seguido dos exercícios, um por linha ("Agachamento - 4x10"). Os dias encontrados no arquivo substituem os exercícios já cadastrados.
+          </p>
           <div className="flex gap-1 overflow-x-auto pb-2">
             {DIAS.map((d) => (
               <button key={d} onClick={() => setDiaEdit(d)} className="font-mono text-xs px-3 py-1.5 rounded-full shrink-0 btn-press" style={{ background: diaEdit === d ? "#1C2320" : "#fff", color: diaEdit === d ? "#fff" : "#5C6570", border: "1px solid #DCDFD8" }}>
@@ -480,8 +564,22 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
     const isText = /^(text|application\/json|application\/csv)/.test(file.type) || /\.(txt|csv|md)$/i.test(file.name);
-    reader.onload = () => { setDietaArquivo({ nome: file.name, tipo: isText ? "texto" : "arquivo", conteudo: reader.result }); showToast("Dieta enviada com sucesso."); };
+    reader.onload = () => {
+      setDietaArquivo({ nome: file.name, tipo: isText ? "texto" : "arquivo", conteudo: reader.result });
+      if (isText) {
+        const importadas = parseDietaTexto(String(reader.result));
+        if (importadas.length) {
+          setRefeicoes((r) => [...r, ...importadas]);
+          showToast(`Dieta enviada — ${importadas.length} refeição(ões) lançada(s) com lembrete ativado.`);
+        } else {
+          showToast("Dieta enviada, mas nenhum horário de refeição foi reconhecido no arquivo.");
+        }
+      } else {
+        showToast("Dieta enviada com sucesso. Envie um arquivo .txt/.csv/.md para lançar as refeições automaticamente.");
+      }
+    };
     if (isText) reader.readAsText(file); else reader.readAsDataURL(file);
+    e.target.value = "";
   };
   const addRefeicao = () => setRefeicoes((r) => [...r, { id: uid(), horario: "12:00", opcoes: "", notificar: true }]);
   const updRefeicao = (id, patch) => setRefeicoes((r) => r.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -515,6 +613,9 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
         <div className="mt-4">
           <input ref={fileRef} type="file" className="hidden" onChange={onFile} accept=".txt,.csv,.md,.pdf,image/*" />
           <button onClick={() => fileRef.current.click()} className="w-full flex items-center justify-center gap-2 py-4 rounded-full font-display text-sm uppercase tracking-wide text-white btn-press" style={{ background: "#C9A227" }}><Upload size={16} /> Enviar arquivo da dieta</button>
+          <p className="text-[11px] mt-1.5" style={{ color: "#7A828A" }}>
+            Envie um arquivo .txt/.csv/.md com uma refeição por linha, começando pelo horário (ex: "07:00 - Ovos e aveia") para que as refeições sejam lançadas e notificadas automaticamente. Arquivos em PDF/imagem ficam salvos para consulta, mas não são lidos automaticamente.
+          </p>
           {dietaArquivo && (
             <div className="mt-4 card-white p-3">
               <div className="flex items-center gap-2 mb-2">
@@ -552,7 +653,7 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notifPe
 /* ---------------- Casa ---------------- */
 function tarefaEhHoje(t) {
   if (t.tipo === "diaria") return true;
-  if (t.tipo === "semanal") return (t.diasSemana || []).includes(todayDia());
+  if (t.tipo === "semanal" || t.tipo === "personalizado") return (t.diasSemana || []).includes(todayDia());
   if (t.tipo === "prazo") return true; // prazos aparecem sempre até serem concluídos
   return true;
 }
@@ -585,7 +686,7 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
     <div className="mt-2">
       <p className="font-mono text-xs mb-2" style={{ color: "#5C6570" }}>{DIA_LABEL[todayDia()].toUpperCase()} · TAREFAS DE HOJE</p>
 
-      {hojeList.length === 0 && <EmptyState text="Nenhuma tarefa por aqui ainda. Adicione tarefas diárias, semanais ou com prazo." />}
+      {hojeList.length === 0 && <EmptyState text="Nenhuma tarefa por aqui ainda. Adicione tarefas diárias, personalizadas ou com prazo." />}
 
       <div className="space-y-2">
         {hojeList.map((t) => {
@@ -626,7 +727,7 @@ function Casa({ tarefas, setTarefas, notifPerm, pedirPermissao, showToast }) {
 
 function TagTipo({ tipo, prazoData, diasSemana }) {
   if (tipo === "diaria") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><Repeat size={10} /> diária</span>;
-  if (tipo === "semanal") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarDays size={10} /> {(diasSemana || []).map((d) => d.slice(0, 3)).join(", ")}</span>;
+  if (tipo === "semanal" || tipo === "personalizado") return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarDays size={10} /> {(diasSemana || []).map((d) => d.slice(0, 3)).join(", ")}</span>;
   return <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full" style={{ background: "#EDEFEA", color: "#5C6570" }}><CalendarClock size={10} /> até {prazoData}</span>;
 }
 
@@ -642,7 +743,7 @@ function FormTarefa({ onSalvar, onCancelar }) {
 
   const salvar = () => {
     if (!titulo.trim()) return;
-    onSalvar({ titulo: titulo.trim(), tipo, diasSemana: tipo === "semanal" ? diasSemana : undefined, prazoData: tipo === "prazo" ? prazoData : undefined, horario: horario || undefined, notificar: notificar && !!horario });
+    onSalvar({ titulo: titulo.trim(), tipo, diasSemana: tipo === "personalizado" ? diasSemana : undefined, prazoData: tipo === "prazo" ? prazoData : undefined, horario: horario || undefined, notificar: notificar && !!horario });
   };
 
   return (
@@ -652,16 +753,19 @@ function FormTarefa({ onSalvar, onCancelar }) {
 
       <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>REPETIÇÃO</p>
       <div className="flex gap-2 mb-3">
-        {[{ id: "diaria", label: "Diária" }, { id: "semanal", label: "Semanal" }, { id: "prazo", label: "Prazo" }].map((o) => (
+        {[{ id: "diaria", label: "Diária" }, { id: "personalizado", label: "Personalizado" }, { id: "prazo", label: "Prazo" }].map((o) => (
           <button key={o.id} onClick={() => setTipo(o.id)} className="flex-1 font-mono text-xs py-2 rounded-full btn-press" style={{ background: tipo === o.id ? "#6E7BC9" : "#fff", color: tipo === o.id ? "#fff" : "#5C6570", border: "1px solid #C7CBC2" }}>{o.label}</button>
         ))}
       </div>
 
-      {tipo === "semanal" && (
-        <div className="flex gap-1 mb-3 flex-wrap">
-          {DIAS.map((d) => (
-            <button key={d} onClick={() => toggleDia(d)} className="font-mono text-[10px] px-2.5 py-1.5 rounded-full btn-press" style={{ background: diasSemana.includes(d) ? "#6E7BC9" : "#fff", color: diasSemana.includes(d) ? "#fff" : "#5C6570", border: "1px solid #C7CBC2" }}>{d.slice(0, 3).toUpperCase()}</button>
-          ))}
+      {tipo === "personalizado" && (
+        <div className="mb-3">
+          <p className="font-mono text-[11px] mb-1" style={{ color: "#7A828A" }}>REPETIR NOS DIAS (ex: terça, quinta e sábado)</p>
+          <div className="flex gap-1 flex-wrap">
+            {DIAS.map((d) => (
+              <button key={d} onClick={() => toggleDia(d)} className="font-mono text-[10px] px-2.5 py-1.5 rounded-full btn-press" style={{ background: diasSemana.includes(d) ? "#6E7BC9" : "#fff", color: diasSemana.includes(d) ? "#fff" : "#5C6570", border: "1px solid #C7CBC2" }}>{d.slice(0, 3).toUpperCase()}</button>
+            ))}
+          </div>
         </div>
       )}
       {tipo === "prazo" && (
