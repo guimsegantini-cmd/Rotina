@@ -800,7 +800,8 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
           aplicarImportadas(parseDietaArquivo(texto).dias);
         } catch (err) {
           console.error("Erro ao ler PDF da dieta", err);
-          showToast("Não conseguimos ler esse PDF automaticamente. O arquivo foi salvo para consulta.");
+          const motivo = (err && err.message ? err.message : String(err)).slice(0, 160);
+          showToast(`Não conseguimos ler esse PDF automaticamente (${motivo}). O arquivo foi salvo para consulta.`);
         } finally {
           setLendoPdf(false);
         }
