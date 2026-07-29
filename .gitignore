@@ -5,5 +5,4 @@ out
 .vercel
 *.log
 public/firebase-messaging-sw.js
-public/pdf.worker.min.mjs
 .claude/
