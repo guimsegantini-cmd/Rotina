@@ -654,9 +654,22 @@ function TimerDescanso({ timerCfg, setTimerCfg }) {
     return () => clearInterval(ivRef.current);
   }, [rodando]);
   const mm = String(Math.floor(restante / 60)).padStart(2, "0"); const ss = String(restante % 60).padStart(2, "0");
+  const total = timerCfg.segundos || 1;
+  const pct = Math.max(0, Math.min(1, restante / total));
+  const circunf = 2 * Math.PI * 54;
   return (
     <div className="mt-6 flex flex-col items-center">
-      <div className={"font-mono text-6xl font-bold" + (rodando ? " pulse-soft" : "")} style={{ color: "#1C2320" }}>{mm}:{ss}</div>
+      <div className="relative w-44 h-44">
+        <svg viewBox="0 0 120 120" className="w-44 h-44 -rotate-90">
+          <circle cx="60" cy="60" r="54" fill="none" stroke="#EDEFEA" strokeWidth="10" />
+          <circle cx="60" cy="60" r="54" fill="none" stroke="#E8462B" strokeWidth="10"
+            strokeDasharray={circunf} strokeDashoffset={circunf * (1 - pct)} strokeLinecap="round"
+            style={{ transition: rodando ? "stroke-dashoffset 1s linear" : "none" }} />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="font-mono text-4xl font-bold tabular-nums" style={{ color: "#1C2320" }}>{mm}:{ss}</span>
+        </div>
+      </div>
       <div className="flex gap-2 mt-6">
         <button onClick={() => setRodando((r) => !r)} className="w-14 h-14 rounded-full flex items-center justify-center text-white btn-press" style={{ background: "#E8462B" }}>{rodando ? <Pause size={20} /> : <Play size={20} />}</button>
         <button onClick={() => { setRodando(false); setRestante(timerCfg.segundos); }} className="w-14 h-14 rounded-full flex items-center justify-center btn-press" style={{ border: "2px solid #C7CBC2" }}><RotateCcw size={18} color="#5C6570" /></button>
