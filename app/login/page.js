@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { Mail, ArrowRight, CheckCircle2 } from "lucide-react";
 import {
   sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink,
-  GoogleAuthProvider, signInWithRedirect, getRedirectResult,
+  GoogleAuthProvider, signInWithPopup,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/AuthProvider";
@@ -42,18 +42,6 @@ export default function LoginPage() {
     }
   }, [router]);
 
-  // Conclui login via Google (quando o usuário volta do redirect do Google)
-  useEffect(() => {
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) router.replace("/");
-      })
-      .catch((err) => {
-        console.error(err);
-        setErro("Não foi possível concluir o login com Google. Tente de novo.");
-      });
-  }, [router]);
-
   const enviarLink = async (e) => {
     e.preventDefault();
     const valido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -72,7 +60,8 @@ export default function LoginPage() {
   const entrarComGoogle = async () => {
     setErro("");
     try {
-      await signInWithRedirect(auth, new GoogleAuthProvider());
+      const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      if (result?.user) router.replace("/");
     } catch (err) {
       console.error(err);
       setErro("Não foi possível entrar com Google. Tente de novo.");
