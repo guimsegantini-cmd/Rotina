@@ -227,6 +227,26 @@ function parseDietaArquivo(texto) {
   return parseDietaSimples(texto);
 }
 
+// Tenta abrir a busca direto no app do TikTok (via URL scheme do app);
+// se o app não estiver instalado (ou o navegador ignorar o scheme), cai
+// para o site do TikTok após um tempo curto. O usuário não perde a
+// funcionalidade caso o app não abra — só não tem a preferência pelo app.
+function abrirTiktokBusca(termo) {
+  const q = encodeURIComponent(termo);
+  const appUrl = `tiktok://search?q=${q}`;
+  const webUrl = `https://www.tiktok.com/search?q=${q}`;
+  let saiuDaPagina = false;
+  const marcarSaida = () => { saiuDaPagina = true; };
+  document.addEventListener("visibilitychange", marcarSaida, { once: true });
+  window.addEventListener("blur", marcarSaida, { once: true });
+  window.location.href = appUrl;
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", marcarSaida);
+    window.removeEventListener("blur", marcarSaida);
+    if (!saiuDaPagina) window.location.href = webUrl;
+  }, 1200);
+}
+
 const RECEITAS = [
   { nome: "Frango desfiado com batata doce", desc: "Proteína magra + carboidrato de baixo índice glicêmico." },
   { nome: "Omelete de claras com espinafre", desc: "Rápida, rica em proteína, ótima para o café da manhã." },
@@ -871,11 +891,11 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
             <div key={r.nome} className="card-white p-3">
               <div className="flex items-start justify-between gap-2">
                 <div><p className="font-semibold text-sm" style={{ color: "#1C2320" }}>{r.nome}</p><p className="text-xs mt-1" style={{ color: "#5C6570" }}>{r.desc}</p></div>
-                <a href={`https://www.tiktok.com/search?q=${encodeURIComponent(r.nome)}`} target="_blank" rel="noopener noreferrer" className="shrink-0 flex items-center gap-1 font-mono text-[11px] px-3 py-1.5 rounded-full btn-press" style={{ background: "#1C2320", color: "#fff" }}>TikTok <ChevronRight size={12} /></a>
+                <a href={`https://www.tiktok.com/search?q=${encodeURIComponent(r.nome)}`} onClick={(e) => { e.preventDefault(); abrirTiktokBusca(r.nome); }} rel="noopener noreferrer" className="shrink-0 flex items-center gap-1 font-mono text-[11px] px-3 py-1.5 rounded-full btn-press" style={{ background: "#1C2320", color: "#fff" }}>TikTok <ChevronRight size={12} /></a>
               </div>
             </div>
           ))}
-          <p className="text-xs mt-2" style={{ color: "#7A828A" }}>* A integração direta com a API do TikTok exige autenticação própria da plataforma; os botões abrem a busca correspondente em nova aba.</p>
+          <p className="text-xs mt-2" style={{ color: "#7A828A" }}>* A integração direta com a API do TikTok exige autenticação própria da plataforma; os botões tentam abrir a busca correspondente no app do TikTok (se instalado) ou no site, como alternativa.</p>
         </div>
       )}
     </div>
