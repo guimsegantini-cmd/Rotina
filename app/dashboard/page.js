@@ -478,7 +478,7 @@ export default function Dashboard() {
       </div>
 
       {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-3 rounded-2xl shadow-lg font-mono text-sm z-50 pop-in" style={{ background: "#1C2320", color: "#EDEFEA", maxWidth: "90vw" }}>
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-3 rounded-2xl shadow-lg font-mono text-sm z-50 pop-in" style={{ background: "#1C2320", color: "#EDEFEA", maxWidth: "90vw", wordBreak: "break-word", overflowWrap: "anywhere" }}>
           {toast}
         </div>
       )}
@@ -517,7 +517,7 @@ function Academia({ ficha, setFicha, checkins, setCheckins, exStatus, setExStatu
           aplicarFichaImportada(dias, "ia");
         } catch (err) {
           console.error("Erro ao ler PDF da ficha", err);
-          const motivo = (err && err.message ? err.message : String(err)).slice(0, 160);
+          const motivo = (err && err.message ? err.message : String(err)).slice(0, 320);
           showToast(`Não conseguimos ler esse PDF automaticamente (${motivo}). O arquivo foi salvo para consulta.`);
         } finally {
           setLendoFichaIA(false);
@@ -822,7 +822,7 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
           aplicarImportadas(dias);
         } catch (err) {
           console.error("Erro ao ler PDF da dieta", err);
-          const motivo = (err && err.message ? err.message : String(err)).slice(0, 160);
+          const motivo = (err && err.message ? err.message : String(err)).slice(0, 320);
           showToast(`Não conseguimos ler esse PDF automaticamente (${motivo}). O arquivo foi salvo para consulta.`);
         } finally {
           setLendoPdf(false);
