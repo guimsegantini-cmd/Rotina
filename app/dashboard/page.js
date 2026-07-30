@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Dumbbell, Droplets, UtensilsCrossed, Home as HomeIcon, Plus, Trash2, Check, Play, Pause,
-  RotateCcw, TrendingUp, Upload, Bell, BellOff, X, ChevronRight, LogOut,
+  RotateCcw, TrendingUp, Upload, Bell, BellOff, X, LogOut,
   FileText, Image as ImageIcon, Settings2, CalendarClock, Repeat, CalendarDays,
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
@@ -227,31 +227,41 @@ function parseDietaArquivo(texto) {
   return parseDietaSimples(texto);
 }
 
-// Tenta abrir a busca direto no app do TikTok (via URL scheme do app);
-// se o app não estiver instalado (ou o navegador ignorar o scheme), cai
-// para o site do TikTok após um tempo curto. O usuário não perde a
-// funcionalidade caso o app não abra — só não tem a preferência pelo app.
-function abrirTiktokBusca(termo) {
-  const q = encodeURIComponent(termo);
-  const appUrl = `tiktok://search?q=${q}`;
-  const webUrl = `https://www.tiktok.com/search?q=${q}`;
-  let saiuDaPagina = false;
-  const marcarSaida = () => { saiuDaPagina = true; };
-  document.addEventListener("visibilitychange", marcarSaida, { once: true });
-  window.addEventListener("blur", marcarSaida, { once: true });
-  window.location.href = appUrl;
-  setTimeout(() => {
-    document.removeEventListener("visibilitychange", marcarSaida);
-    window.removeEventListener("blur", marcarSaida);
-    if (!saiuDaPagina) window.location.href = webUrl;
-  }, 1200);
+// Extrai uma lista curta de ingredientes a partir do texto livre de uma
+// refeição (usado quando a refeição não veio com uma lista de ingredientes
+// já estruturada pela IA — ex: refeições digitadas manualmente). Remove
+// quantidades/medidas comuns e separa por conectores usuais em português.
+const MEDIDA_RE = /\(([^)]*)\)|\b\d+([.,]\d+)?\s*(g|kg|ml|l|colher(es)?(\s+de\s+(sopa|chá|ch[aá]|sobremesa))?|x[ií]cara(s)?(\s+de\s+caf[eé])?|copo(s)?(\s+americano)?|fatia(s)?|unidade(s)?|escumadeira(s)?|por[çc][ãa]o(ões|oes)?)\b/gi;
+const STOPWORDS_ING = new Set(["de", "da", "do", "das", "dos", "com", "e", "ou", "para", "a", "o", "as", "os", "um", "uma", "sem", "ao", "à", "na", "no", "nas", "nos", "em", "que"]);
+function limparParteIngrediente(parte) {
+  const palavras = parte.trim().split(/\s+/).filter(Boolean);
+  while (palavras.length && STOPWORDS_ING.has(palavras[0].toLowerCase())) palavras.shift();
+  while (palavras.length && STOPWORDS_ING.has(palavras[palavras.length - 1].toLowerCase())) palavras.pop();
+  return palavras.join(" ");
+}
+function extrairIngredientes(texto) {
+  if (!texto) return [];
+  const limpo = texto.replace(MEDIDA_RE, " ").replace(/[+•●]/g, ",").replace(/[:=]/g, ",");
+  const partes = limpo.split(/,|\/|\bcom\b|\be\b|\bou\b/i);
+  const vistos = new Set();
+  const out = [];
+  partes.forEach((p) => {
+    const item = limparParteIngrediente(p.replace(/^[-–—.\s]+|[-–—.\s]+$/g, ""));
+    if (!item || item.split(/\s+/).length > 4) return;
+    const chave = item.toLowerCase();
+    if (chave.length < 2 || vistos.has(chave)) return;
+    vistos.add(chave);
+    out.push(item);
+  });
+  return out.slice(0, 6);
 }
 
 // Deriva sugestões de receita a partir das refeições já cadastradas (via
-// upload da dieta ou cadastro manual), em vez de uma lista fixa genérica —
-// a busca no TikTok fica de acordo com o que a pessoa realmente vai comer.
-// "opcoes" costuma vir como "Título — descrição" (quando leído por IA);
-// separamos as duas partes para exibir e para montar o termo de busca.
+// upload da dieta ou cadastro manual), em vez de uma lista fixa genérica.
+// Usa a lista de ingredientes extraída pela IA quando disponível (mais
+// precisa) e cai para extração local por texto quando não houver.
+// "opcoes" costuma vir como "Título — descrição" (quando lido por IA);
+// separamos as duas partes só para exibição.
 function receitasDeRefeicoes(refeicoes) {
   const vistos = new Set();
   const lista = [];
@@ -264,7 +274,9 @@ function receitasDeRefeicoes(refeicoes) {
       const partes = opcoes.split(/\s+—\s+/);
       const titulo = partes.length > 1 ? partes[0] : (r.horario ? `Refeição ${r.horario}` : "Refeição");
       const descricao = partes.length > 1 ? partes.slice(1).join(" — ") : opcoes;
-      lista.push({ id: r.id, nome: titulo, desc: descricao, busca: descricao });
+      const ingredientes = (r.ingredientes && r.ingredientes.length ? r.ingredientes : extrairIngredientes(descricao));
+      if (!ingredientes.length) return;
+      lista.push({ id: r.id, nome: titulo, desc: descricao, ingredientes });
     });
   });
   return lista;
@@ -939,21 +951,23 @@ function Dieta({ refeicoes, setRefeicoes, dietaArquivo, setDietaArquivo, notific
       {sub === "receitas" && (
         <div className="mt-4 space-y-2">
           {receitas.length === 0 ? (
-            <EmptyState text="Envie sua dieta na aba 'Arquivo' (ou cadastre refeições em 'Refeições') para ver sugestões de receitas baseadas nela." />
+            <EmptyState text="Envie sua dieta na aba 'Arquivo' (ou cadastre refeições em 'Refeições') para ver ideias de receitas baseadas nos ingredientes dela." />
           ) : (
             <>
-              <p className="font-mono text-xs mb-1" style={{ color: "#5C6570" }}>BUSCAS BASEADAS NA SUA DIETA</p>
+              <p className="font-mono text-xs mb-1" style={{ color: "#5C6570" }}>IDEIAS COM OS INGREDIENTES DA SUA DIETA</p>
               {receitas.map((r) => (
                 <div key={r.id} className="card-white p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div><p className="font-semibold text-sm" style={{ color: "#1C2320" }}>{r.nome}</p><p className="text-xs mt-1" style={{ color: "#5C6570" }}>{r.desc}</p></div>
-                    <a href={`https://www.tiktok.com/search?q=${encodeURIComponent(r.busca)}`} onClick={(e) => { e.preventDefault(); abrirTiktokBusca(r.busca); }} rel="noopener noreferrer" className="shrink-0 flex items-center gap-1 font-mono text-[11px] px-3 py-1.5 rounded-full btn-press" style={{ background: "#1C2320", color: "#fff" }}>TikTok <ChevronRight size={12} /></a>
+                  <p className="font-semibold text-sm" style={{ color: "#1C2320" }}>{r.nome}</p>
+                  <p className="text-xs mt-1" style={{ color: "#5C6570" }}>{r.desc}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {r.ingredientes.map((ing, i) => (
+                      <span key={i} className="font-mono text-[11px] px-2.5 py-1 rounded-full" style={{ background: "#EDEFEA", color: "#1C2320" }}>{ing}</span>
+                    ))}
                   </div>
                 </div>
               ))}
             </>
           )}
-          <p className="text-xs mt-2" style={{ color: "#7A828A" }}>* A integração direta com a API do TikTok exige autenticação própria da plataforma; os botões tentam abrir a busca correspondente no app do TikTok (se instalado) ou no site, como alternativa.</p>
         </div>
       )}
     </div>
